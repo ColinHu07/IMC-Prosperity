@@ -1,0 +1,124 @@
+{
+  "label": "optimized",
+  "score_info": {
+    "score": 271484.11,
+    "total_pnl": 205116.0,
+    "min_day_pnl": 66950.0,
+    "max_drawdown": 1150.0,
+    "avg_inventory": 68.86,
+    "day_pnls": [
+      66950.0,
+      69923.0,
+      68243.0
+    ],
+    "day_details": [
+      {
+        "ASH_COATED_OSMIUM": {
+          "final_pnl": 15145.0,
+          "max_drawdown": 1105.0,
+          "fill_count": 603,
+          "aggressive_fills": 237,
+          "passive_fills": 366,
+          "turnover": 34632954.0,
+          "max_position": 50,
+          "avg_abs_position": 21.0,
+          "final_position": 34
+        },
+        "INTARIAN_PEPPER_ROOT": {
+          "final_pnl": 51805.0,
+          "max_drawdown": 800.0,
+          "fill_count": 287,
+          "aggressive_fills": 102,
+          "passive_fills": 185,
+          "turnover": 13511778.0,
+          "max_position": 50,
+          "avg_abs_position": 46.51,
+          "final_position": 50
+        },
+        "TOTAL": {
+          "final_pnl": 66950.0,
+          "max_drawdown": 1105.0
+        }
+      },
+      {
+        "ASH_COATED_OSMIUM": {
+          "final_pnl": 17195.0,
+          "max_drawdown": 897.0,
+          "fill_count": 627,
+          "aggressive_fills": 256,
+          "passive_fills": 371,
+          "turnover": 36002033.0,
+          "max_position": 50,
+          "avg_abs_position": 22.44,
+          "final_position": 44
+        },
+        "INTARIAN_PEPPER_ROOT": {
+          "final_pnl": 52728.0,
+          "max_drawdown": 950.0,
+          "fill_count": 299,
+          "aggressive_fills": 111,
+          "passive_fills": 188,
+          "turnover": 16005084.0,
+          "max_position": 50,
+          "avg_abs_position": 46.98,
+          "final_position": 42
+        },
+        "TOTAL": {
+          "final_pnl": 69923.0,
+          "max_drawdown": 950.0
+        }
+      },
+      {
+        "ASH_COATED_OSMIUM": {
+          "final_pnl": 15587.0,
+          "max_drawdown": 1150.0,
+          "fill_count": 638,
+          "aggressive_fills": 287,
+          "passive_fills": 351,
+          "turnover": 37284823.0,
+          "max_position": 50,
+          "avg_abs_position": 25.89,
+          "final_position": 34
+        },
+        "INTARIAN_PEPPER_ROOT": {
+          "final_pnl": 52656.0,
+          "max_drawdown": 900.0,
+          "fill_count": 425,
+          "aggressive_fills": 188,
+          "passive_fills": 237,
+          "turnover": 25741978.0,
+          "max_position": 50,
+          "avg_abs_position": 43.76,
+          "final_position": 42
+        },
+        "TOTAL": {
+          "final_pnl": 68243.0,
+          "max_drawdown": 1150.0
+        }
+      }
+    ]
+  },
+  "ash_params": {
+    "ewma_alpha": 0.06,
+    "take_threshold": 0.5,
+    "make_width": 7.5,
+    "inventory_skew_factor": 0.02,
+    "max_passive_size": 37.5,
+    "max_take_size": 10,
+    "position_limit": 50,
+    "imbalance_edge": 1.0
+  },
+  "pepper_params": {
+    "trend_rate": 0.105,
+    "ewma_alpha_base": 0.02,
+    "take_threshold": 2.0,
+    "make_width": 5,
+    "inventory_skew_factor": 0.0,
+    "max_passive_size": 20,
+    "max_take_size": 15,
+    "residual_zscore_threshold": 1.0,
+    "position_limit": 50,
+    "directional_skew": 1.5,
+    "trend_ewma_alpha": 0.001
+  }
+}
