@@ -98,19 +98,14 @@ class Trader:
 
         pos = position
 
-        # Sweep asks where spread (ask - best_bid) <= 15, skip expensive outliers.
+        # Sweep only the cheapest ask level per tick to save on entry cost.
         if asks:
-            best_bid = max(bids.keys()) if bids else None
-            for ap in sorted(asks.keys()):
-                if best_bid is not None and ap - best_bid > 15:
-                    break
-                room = limit - pos
-                if room <= 0:
-                    break
-                vol = min(asks[ap], room)
-                if vol > 0:
-                    orders.append(Order(sym, int(ap), int(vol)))
-                    pos += vol
+            cheapest_ask = min(asks.keys())
+            room = limit - pos
+            vol = min(asks[cheapest_ask], room)
+            if vol > 0:
+                orders.append(Order(sym, int(cheapest_ask), int(vol)))
+                pos += vol
 
         # Passive penny bid to catch remaining room.
         if bids and pos < limit:
