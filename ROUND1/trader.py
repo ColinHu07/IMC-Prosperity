@@ -90,9 +90,11 @@ class Trader:
         adj_fair = fair + skew
         pos = position
 
+        # Track aggressive fill volumes for position-limit safety
+        agg_buy_vol = 0
+        agg_sell_vol = 0
+
         # --- Aggressive takes: sweep all levels better than fair ---
-        # With 16-tick spread, anything below our fair is a good buy,
-        # anything above is a good sell. No need for extra edge threshold.
         if asks:
             for ap in sorted(asks):
                 if ap < adj_fair:
@@ -101,6 +103,7 @@ class Trader:
                     if vol > 0:
                         orders.append(Order(sym, int(ap), vol))
                         pos += vol
+                        agg_buy_vol += vol
 
         if bids:
             for bp in sorted(bids, reverse=True):
@@ -110,28 +113,46 @@ class Trader:
                     if vol > 0:
                         orders.append(Order(sym, int(bp), -vol))
                         pos -= vol
+                        agg_sell_vol += vol
 
-        # --- Passive quotes: penny the book to get queue priority ---
-        # Post just inside the best bid/ask to capture spread.
+        # --- Passive quotes: multi-level to increase fill rate ---
         best_bid = max(bids) if bids else int(fair) - 8
         best_ask = min(asks) if asks else int(fair) + 8
 
-        bid_px = best_bid + 1
-        ask_px = best_ask - 1
+        # Remaining room after aggressive orders (worst case: all agg fill)
+        buy_room = LIMIT - position - agg_buy_vol
+        sell_room = LIMIT + position - agg_sell_vol
 
-        # Safety: don't cross our own fair value
-        if bid_px >= adj_fair:
-            bid_px = math.floor(adj_fair) - 1
-        if ask_px <= adj_fair:
-            ask_px = math.ceil(adj_fair) + 1
+        # Level 1: penny the book (best priority)
+        bid_px1 = best_bid + 1
+        ask_px1 = best_ask - 1
+        if bid_px1 >= adj_fair:
+            bid_px1 = math.floor(adj_fair) - 1
+        if ask_px1 <= adj_fair:
+            ask_px1 = math.ceil(adj_fair) + 1
 
-        bid_vol = min(MAX_SIZE, LIMIT - pos)
-        ask_vol = min(MAX_SIZE, LIMIT + pos)
+        # Level 2: match the book (more likely to fill)
+        bid_px2 = best_bid
+        ask_px2 = best_ask
+        if bid_px2 >= adj_fair:
+            bid_px2 = math.floor(adj_fair) - 2
+        if ask_px2 <= adj_fair:
+            ask_px2 = math.ceil(adj_fair) + 2
 
-        if bid_vol > 0:
-            orders.append(Order(sym, int(bid_px), int(bid_vol)))
-        if ask_vol > 0:
-            orders.append(Order(sym, int(ask_px), -int(ask_vol)))
+        # Split volume across levels (60/40 penny/match)
+        bid_vol1 = min(int(buy_room * 0.6), buy_room)
+        bid_vol2 = min(buy_room - bid_vol1, buy_room)
+        ask_vol1 = min(int(sell_room * 0.6), sell_room)
+        ask_vol2 = min(sell_room - ask_vol1, sell_room)
+
+        if bid_vol1 > 0:
+            orders.append(Order(sym, int(bid_px1), int(bid_vol1)))
+        if bid_vol2 > 0 and bid_px2 != bid_px1:
+            orders.append(Order(sym, int(bid_px2), int(bid_vol2)))
+        if ask_vol1 > 0:
+            orders.append(Order(sym, int(ask_px1), -int(ask_vol1)))
+        if ask_vol2 > 0 and ask_px2 != ask_px1:
+            orders.append(Order(sym, int(ask_px2), -int(ask_vol2)))
 
         return orders, td
 
