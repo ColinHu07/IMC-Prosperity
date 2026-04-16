@@ -1,123 +1,254 @@
-"""
-IMC Prosperity Round 1 - Final Submission
-==========================================
-Self-contained Trader class for ASH_COATED_OSMIUM and INTARIAN_PEPPER_ROOT.
-
-ASH_COATED_OSMIUM: Pure penny market maker (no taking).
-  - Known fair value = 10000 (strongly mean-reverting, ACF(1)=-0.5).
-  - MAKING ONLY: penny the book (best_bid+1 / best_ask-1) with full capacity.
-  - No taking code — visible book depth is stale/unmatchable on the platform,
-    and taking orders create tight passive levels that cannibalize wider pennies.
-
-INTARIAN_PEPPER_ROOT: Buy-and-hold drift capture.
-  - Structural upward drift of ~0.1 pt/tick.
-  - Sweep only cheapest ask level per tick (saves ~1.7 pt/unit on entry).
-  - Passive penny bid catches remaining capacity.
-"""
 from datamodel import OrderDepth, TradingState, Order
+import json
+import math
 
-FAIR_ASH = 10000
-POSITION_LIMIT = 80
 
-PEPPER_PARAMS = {
-    "max_passive_size": 30,
-    "position_limit": 80,
-}
+POSITION_LIMIT = 80  # Both products
 
 
 class Trader:
+    """
+    Round 1 strategy for ASH_COATED_OSMIUM and INTARIAN_PEPPER_ROOT.
+
+    Structural edges (not data-mined):
+    - PEPPER has a consistent linear price drift (~+0.1/tick). We estimate it
+      online from scratch each day using expanding-window OLS. The edge is
+      being max long to ride the drift, plus capturing spread while doing so.
+    - ASH has no trend, oscillates around a slowly-moving fair value, and has
+      a structurally wide spread (~16 ticks). Edge is pure market making:
+      quote around EWMA fair value and take mispriced levels.
+    """
 
     def run(self, state: TradingState):
         result = {}
+        td = {}
 
-        sym = "ASH_COATED_OSMIUM"
-        if sym in state.order_depths:
-            result[sym] = self._trade_ash(state, sym)
+        try:
+            old = json.loads(state.traderData) if state.traderData else {}
+        except Exception:
+            old = {}
 
-        sym = "INTARIAN_PEPPER_ROOT"
-        if sym in state.order_depths:
-            result[sym] = self._trade_pepper(state, sym)
+        for sym in ["ASH_COATED_OSMIUM", "INTARIAN_PEPPER_ROOT"]:
+            if sym not in state.order_depths:
+                continue
+            od = state.order_depths[sym]
+            bids = {p: abs(v) for p, v in od.buy_orders.items()} if od.buy_orders else {}
+            asks = {p: abs(v) for p, v in od.sell_orders.items()} if od.sell_orders else {}
 
-        return result, 0, ""
+            mid = None
+            if bids and asks:
+                mid = (max(bids) + min(asks)) / 2
+            elif bids:
+                mid = float(max(bids))
+            elif asks:
+                mid = float(min(asks))
 
-    def _get_book(self, state, sym):
-        od = state.order_depths.get(sym, OrderDepth())
-        bids = {p: abs(v) for p, v in od.buy_orders.items()} if od.buy_orders else {}
-        asks = {p: abs(v) for p, v in od.sell_orders.items()} if od.sell_orders else {}
-        mid = None
+            pos = state.position.get(sym, 0)
+
+            if sym == "ASH_COATED_OSMIUM":
+                orders, td_part = self._trade_ash(sym, bids, asks, mid, pos, old)
+            else:
+                orders, td_part = self._trade_pepper(sym, bids, asks, mid, pos, old)
+
+            result[sym] = orders
+            td.update(td_part)
+
+        try:
+            trader_data = json.dumps(td)
+        except Exception:
+            trader_data = ""
+
+        return result, 0, trader_data
+
+    # ------------------------------------------------------------------ ASH
+    # Pure market making. No trend, fair value is slow-moving.
+    # EWMA tracks fair value. We quote symmetrically around it,
+    # with a gentle inventory skew to avoid getting stuck.
+    # We aggressively take mispriced levels (ask < fair or bid > fair).
+    # ------------------------------------------------------------------ ASH
+
+    def _trade_ash(self, sym, bids, asks, mid, position, old):
+        LIMIT = POSITION_LIMIT
+        ANCHOR = 10000.0           # ASH mean-reverts to this level
+        SKEW_FACTOR = 0.05         # Gentle inventory pressure
+        MAX_SIZE = 80              # Max order size
+
+        # --- Microprice: volume-weighted midpoint ---
+        mprice = mid
         if bids and asks:
-            mid = (max(bids.keys()) + min(asks.keys())) / 2
-        elif bids:
-            mid = max(bids.keys())
-        elif asks:
-            mid = min(asks.keys())
-        return bids, asks, mid
+            bb = max(bids)
+            ba = min(asks)
+            bv = bids[bb]
+            av = asks[ba]
+            if bv + av > 0:
+                mprice = (ba * bv + bb * av) / (bv + av)
 
-    def _trade_ash(self, state, sym):
-        bids, asks, mid = self._get_book(state, sym)
-        position = state.position.get(sym, 0)
-        limit = POSITION_LIMIT
-        fair = FAIR_ASH
+        # --- Fair value: fixed anchor (no EWMA lag, no noise-chasing) ---
+        fair = ANCHOR
+        td = {}
         orders = []
+        if fair is None:
+            return orders, td
+
+        # Deviation-based skew: lean INTO the oscillation.
+        # When mid is below fair (bottom), raise adj_fair → buy more, resist selling.
+        # When mid is above fair (top), lower adj_fair → sell more, resist buying.
+        # Small inventory component keeps position bounded.
+        dev = (mid - fair) if mid is not None else 0
+        skew = -dev * 0.3 - position * 0.02
+        adj_fair = fair + skew
         pos = position
 
-        # MAKING ONLY — penny the book with full remaining capacity.
-        best_bid = max(bids.keys()) if bids else None
-        best_ask = min(asks.keys()) if asks else None
+        # Track aggressive fill volumes for position-limit safety
+        agg_buy_vol = 0
+        agg_sell_vol = 0
 
-        bid_price = fair - 1
-        ask_price = fair + 1
-
-        if best_bid is not None:
-            penny_bid = int(best_bid) + 1
-            if penny_bid < fair:
-                bid_price = penny_bid
-        if best_ask is not None:
-            penny_ask = int(best_ask) - 1
-            if penny_ask > fair:
-                ask_price = penny_ask
-
-        bid_vol = limit - pos
-        ask_vol = limit + pos
-
-        if bid_vol > 0:
-            orders.append(Order(sym, int(bid_price), int(bid_vol)))
-        if ask_vol > 0:
-            orders.append(Order(sym, int(ask_price), -int(ask_vol)))
-
-        return orders
-
-    def _trade_pepper(self, state, sym):
-        p = PEPPER_PARAMS
-        bids, asks, _ = self._get_book(state, sym)
-        position = state.position.get(sym, 0)
-        limit = p["position_limit"]
-        orders = []
-        if position >= limit:
-            return orders
-
-        pos = position
-
-        # Sweep asks where spread (ask - best_bid) <= 15, skip expensive outliers.
+        # --- Aggressive takes: sweep all levels better than fair ---
         if asks:
-            best_bid = max(bids.keys()) if bids else None
-            for ap in sorted(asks.keys()):
-                if best_bid is not None and ap - best_bid > 15:
-                    break
-                room = limit - pos
+            for ap in sorted(asks):
+                if ap < adj_fair:
+                    room = LIMIT - pos
+                    vol = min(asks[ap], MAX_SIZE, room)
+                    if vol > 0:
+                        orders.append(Order(sym, int(ap), vol))
+                        pos += vol
+                        agg_buy_vol += vol
+
+        if bids:
+            for bp in sorted(bids, reverse=True):
+                if bp > adj_fair:
+                    room = LIMIT + pos
+                    vol = min(bids[bp], MAX_SIZE, room)
+                    if vol > 0:
+                        orders.append(Order(sym, int(bp), -vol))
+                        pos -= vol
+                        agg_sell_vol += vol
+
+        # --- Passive quotes: multi-level to increase fill rate ---
+        best_bid = max(bids) if bids else int(fair) - 8
+        best_ask = min(asks) if asks else int(fair) + 8
+
+        # Remaining room after aggressive orders (worst case: all agg fill)
+        buy_room = LIMIT - position - agg_buy_vol
+        sell_room = LIMIT + position - agg_sell_vol
+
+        # Level 1: penny the book (best priority)
+        bid_px1 = best_bid + 1
+        ask_px1 = best_ask - 1
+        if bid_px1 >= adj_fair:
+            bid_px1 = math.floor(adj_fair) - 1
+        if ask_px1 <= adj_fair:
+            ask_px1 = math.ceil(adj_fair) + 1
+
+        # Level 2: match the book (more likely to fill)
+        bid_px2 = best_bid
+        ask_px2 = best_ask
+        if bid_px2 >= adj_fair:
+            bid_px2 = math.floor(adj_fair) - 2
+        if ask_px2 <= adj_fair:
+            ask_px2 = math.ceil(adj_fair) + 2
+
+        # Split volume across levels (60/40 penny/match)
+        bid_vol1 = min(int(buy_room * 0.6), buy_room)
+        bid_vol2 = min(buy_room - bid_vol1, buy_room)
+        ask_vol1 = min(int(sell_room * 0.6), sell_room)
+        ask_vol2 = min(sell_room - ask_vol1, sell_room)
+
+        if bid_vol1 > 0:
+            orders.append(Order(sym, int(bid_px1), int(bid_vol1)))
+        if bid_vol2 > 0 and bid_px2 != bid_px1:
+            orders.append(Order(sym, int(bid_px2), int(bid_vol2)))
+        if ask_vol1 > 0:
+            orders.append(Order(sym, int(ask_px1), -int(ask_vol1)))
+        if ask_vol2 > 0 and ask_px2 != ask_px1:
+            orders.append(Order(sym, int(ask_px2), -int(ask_vol2)))
+
+        return orders, td
+
+    # -------------------------------------------------------------- PEPPER
+    # Structural linear drift: price rises ~0.1/tick (~1000/day).
+    # Online OLS estimates trend from scratch each day.
+    # Get to max long ASAP to ride the drift. Take asks aggressively.
+    # -------------------------------------------------------------- PEPPER
+
+    def _trade_pepper(self, sym, bids, asks, mid, position, old):
+        LIMIT = POSITION_LIMIT
+        MAX_SIZE = 80
+        TREND_PRIOR = 0.1
+
+        # --- Online OLS for trend fair value ---
+        n = old.get("p_n", 0)
+        sx = old.get("p_sx", 0.0)
+        sy = old.get("p_sy", 0.0)
+        sxy = old.get("p_sxy", 0.0)
+        sxx = old.get("p_sxx", 0.0)
+        rate = old.get("p_rate", TREND_PRIOR)
+        base = old.get("p_base")
+
+        step = n
+        n += 1
+
+        if mid is not None:
+            sx += step
+            sy += mid
+            sxy += step * mid
+            sxx += step * step
+
+            denom = n * sxx - sx * sx
+            if n >= 30 and denom != 0:
+                rate = (n * sxy - sx * sy) / denom
+                base = (sy - rate * sx) / n
+            elif base is None:
+                base = mid
+
+        td = {"p_n": n, "p_sx": sx, "p_sy": sy, "p_sxy": sxy,
+              "p_sxx": sxx, "p_rate": rate, "p_base": base}
+
+        orders = []
+        if base is None:
+            return orders, td
+
+        fair = base + rate * step
+        pos = position
+
+        # Take asks aggressively — opportunity cost of not being long is huge.
+        # Allow premium up to 8 ticks while building, tighter when near full.
+        if asks:
+            for ap in sorted(asks):
+                room = LIMIT - pos
                 if room <= 0:
                     break
-                vol = min(asks[ap], room)
-                if vol > 0:
-                    orders.append(Order(sym, int(ap), int(vol)))
-                    pos += vol
+                max_premium = 8 if pos < LIMIT * 0.8 else 3
+                if ap <= fair + max_premium:
+                    vol = min(asks[ap], MAX_SIZE, room)
+                    if vol > 0:
+                        orders.append(Order(sym, int(ap), vol))
+                        pos += vol
 
-        # Passive penny bid to catch remaining room.
-        if bids and pos < limit:
-            best_bid = max(bids.keys())
-            bid_price = int(best_bid) + 1
-            bid_vol = min(limit - pos, p["max_passive_size"])
-            if bid_vol > 0:
-                orders.append(Order(sym, bid_price, int(bid_vol)))
+        # Only sell at extreme premium (rare dislocation)
+        if bids and pos > 0:
+            for bp in sorted(bids, reverse=True):
+                if bp > fair + 15:
+                    vol = min(bids[bp], 5, pos)
+                    if vol > 0:
+                        orders.append(Order(sym, int(bp), -vol))
+                        pos -= vol
 
-        return orders
+        # Passive bid: penny the book, capped at fair
+        bid_vol = min(MAX_SIZE, LIMIT - pos)
+        if bid_vol > 0:
+            if bids:
+                bid_px = max(bids) + 1
+                if bid_px > fair:
+                    bid_px = math.floor(fair)
+            else:
+                bid_px = math.floor(fair) - 1
+            orders.append(Order(sym, int(bid_px), int(bid_vol)))
+
+        # Ask far above fair to avoid selling into the trend
+        ask_vol = min(MAX_SIZE, LIMIT + pos)
+        if ask_vol > 0:
+            ask_px = math.ceil(fair + 15)
+            orders.append(Order(sym, int(ask_px), -int(ask_vol)))
+
+        return orders, td
