@@ -8,7 +8,14 @@ Fill assumptions (conservative):
   We use a simple heuristic: passive buys fill if next-step best ask <= our bid price,
   passive sells fill if next-step best bid >= our ask price.
   Fill quantity is min(our_size, traded_volume_at_that_price_or_better).
+
+A pessimistic variant (simulate_passive_fills_pessimistic) requires a strict
+cross and caps fill volume at a fraction of traded volume. Strategies that
+are robust to the live environment should perform acceptably under BOTH.
 """
+
+# Tunable pessimism parameters (scale passive fills down to model queue competition).
+PESSIMISTIC_FILL_RATIO = 0.3
 
 
 def simulate_aggressive_fills(orders, bids, asks):
@@ -86,6 +93,50 @@ def simulate_passive_fills(passive_orders, next_bids, next_asks, next_trades):
                 for t in next_trades:
                     if t["price"] >= price:
                         fill_vol = min(abs(size), t["quantity"])
+                        fills.append((price, -fill_vol))
+                        break
+
+    return fills
+
+
+def simulate_passive_fills_pessimistic(passive_orders, next_bids, next_asks, next_trades,
+                                       fill_ratio=PESSIMISTIC_FILL_RATIO):
+    """
+    Pessimistic passive fill model. Only counts fills that clearly cross
+    (strict inequality) and caps quantity at fill_ratio * available liquidity to
+    model queue competition and partial fills.
+    """
+    fills = []
+    next_best_ask = min(next_asks.keys()) if next_asks else float("inf")
+    next_best_bid = max(next_bids.keys()) if next_bids else 0
+
+    for price, size in passive_orders:
+        if size > 0:  # passive buy
+            if next_best_ask < price:
+                avail = next_asks.get(next_best_ask, 0)
+                cap = max(1, int(avail * fill_ratio))
+                fill_vol = min(abs(size), cap)
+                if fill_vol > 0:
+                    fills.append((price, fill_vol))
+            else:
+                for t in next_trades:
+                    if t["price"] < price:
+                        cap = max(1, int(t["quantity"] * fill_ratio))
+                        fill_vol = min(abs(size), cap)
+                        fills.append((price, fill_vol))
+                        break
+        elif size < 0:  # passive sell
+            if next_best_bid > price:
+                avail = next_bids.get(next_best_bid, 0)
+                cap = max(1, int(avail * fill_ratio))
+                fill_vol = min(abs(size), cap)
+                if fill_vol > 0:
+                    fills.append((price, -fill_vol))
+            else:
+                for t in next_trades:
+                    if t["price"] > price:
+                        cap = max(1, int(t["quantity"] * fill_ratio))
+                        fill_vol = min(abs(size), cap)
                         fills.append((price, -fill_vol))
                         break
 
