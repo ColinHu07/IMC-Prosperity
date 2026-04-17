@@ -236,7 +236,7 @@ class Trader:
 
     def _trade_pepper(self, sym, bids, asks, mid, position, old):
         LIMIT = POSITION_LIMIT
-        MAX_SIZE = 25
+        MAX_SIZE = 80
         TREND_PRIOR = 0.1
 
         n = old.get("p_n", 0)
@@ -268,17 +268,6 @@ class Trader:
 
         orders = []
         if base is None:
-            # Bootstrap: get initial long exposure immediately.
-            if asks:
-                best_ask = min(asks)
-                buy_sz = min(asks[best_ask], MAX_SIZE, LIMIT - position)
-                if buy_sz > 0:
-                    orders.append(Order(sym, int(best_ask), int(buy_sz)))
-            if bids and position < LIMIT:
-                bid_px = max(bids) + 1
-                bid_sz = min(20, LIMIT - position)
-                if bid_sz > 0:
-                    orders.append(Order(sym, int(bid_px), int(bid_sz)))
             return orders, td
 
         fair = base + rate * step
