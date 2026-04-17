@@ -70,25 +70,12 @@ class Trader:
     def _trade_ash(self, sym, bids, asks, mid, position, old):
         LIMIT = POSITION_LIMIT
         ANCHOR = 10000.0           # ASH mean-reverts to this level
-        SKEW_FACTOR = 0.05         # Gentle inventory pressure
         MAX_SIZE = 80              # Max order size
-
-        # --- Microprice: volume-weighted midpoint ---
-        mprice = mid
-        if bids and asks:
-            bb = max(bids)
-            ba = min(asks)
-            bv = bids[bb]
-            av = asks[ba]
-            if bv + av > 0:
-                mprice = (ba * bv + bb * av) / (bv + av)
 
         # --- Fair value: fixed anchor (no EWMA lag, no noise-chasing) ---
         fair = ANCHOR
         td = {}
         orders = []
-        if fair is None:
-            return orders, td
 
         # Deviation-based skew: lean INTO the oscillation.
         # When mid is below fair (bottom), raise adj_fair → buy more, resist selling.
@@ -168,7 +155,8 @@ class Trader:
     # -------------------------------------------------------------- PEPPER
     # Structural linear drift: price rises ~0.1/tick (~1000/day).
     # Online OLS estimates trend from scratch each day.
-    # Get to max long ASAP to ride the drift. Take asks aggressively.
+    # Stay long to ride the drift, but avoid overpaying deep ask levels.
+    # Execution edge here is robust: top-of-book taking + passive accumulation.
     # -------------------------------------------------------------- PEPPER
 
     def _trade_pepper(self, sym, bids, asks, mid, position, old):
@@ -211,19 +199,31 @@ class Trader:
         fair = base + rate * step
         pos = position
 
-        # Take asks aggressively — opportunity cost of not being long is huge.
-        # Allow premium up to 8 ticks while building, tighter when near full.
+        # Build long exposure quickly with controlled aggression:
+        # always lift best ask (single level) while underweight, and avoid
+        # sweeping deep/expensive ask levels.
         if asks:
-            for ap in sorted(asks):
-                room = LIMIT - pos
-                if room <= 0:
-                    break
-                max_premium = 8 if pos < LIMIT * 0.8 else 3
-                if ap <= fair + max_premium:
-                    vol = min(asks[ap], MAX_SIZE, room)
-                    if vol > 0:
-                        orders.append(Order(sym, int(ap), vol))
-                        pos += vol
+            sorted_asks = sorted(asks)
+            room = LIMIT - pos
+            if room > 0:
+                best_ask = sorted_asks[0]
+                # Opportunity cost of staying underinvested is large because
+                # of structural drift. Take top-of-book every tick.
+                take_clip = MAX_SIZE if pos < LIMIT * 0.6 else MAX_SIZE // 2
+                vol = min(asks[best_ask], take_clip, room)
+                if vol > 0:
+                    orders.append(Order(sym, int(best_ask), int(vol)))
+                    pos += vol
+
+            # Optionally lift one more level only if still cheap vs fair.
+            room = LIMIT - pos
+            if room > 0 and len(sorted_asks) > 1:
+                second_ask = sorted_asks[1]
+                if second_ask <= fair + 2:
+                    vol2 = min(asks[second_ask], MAX_SIZE // 2, room)
+                    if vol2 > 0:
+                        orders.append(Order(sym, int(second_ask), int(vol2)))
+                        pos += vol2
 
         # Only sell at extreme premium (rare dislocation)
         if bids and pos > 0:
@@ -234,13 +234,14 @@ class Trader:
                         orders.append(Order(sym, int(bp), -vol))
                         pos -= vol
 
-        # Passive bid: penny the book, capped at fair
+        # Passive bid: primary way to fill remaining room.
         bid_vol = min(MAX_SIZE, LIMIT - pos)
         if bid_vol > 0:
             if bids:
                 bid_px = max(bids) + 1
-                if bid_px > fair:
-                    bid_px = math.floor(fair)
+                bid_cap = math.floor(fair + 1)
+                if bid_px > bid_cap:
+                    bid_px = bid_cap
             else:
                 bid_px = math.floor(fair) - 1
             orders.append(Order(sym, int(bid_px), int(bid_vol)))
