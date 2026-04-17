@@ -69,22 +69,13 @@ class Trader:
 
     def _trade_ash(self, sym, bids, asks, mid, position, old):
         LIMIT = POSITION_LIMIT
-        EWMA_ALPHA = 0.05          # Tracks slow-moving fair value
-        SKEW_FACTOR = 0.05         # Gentle inventory pressure
+        ANCHOR = 10000.0           # ASH mean-reverts to this level
         MAX_SIZE = 80              # Max order size
 
-        # --- Fair value: simple EWMA on mid ---
-        ewma = old.get("a_ewma")
-        if ewma is None:
-            ewma = mid if mid is not None else 10000.0
-        elif mid is not None:
-            ewma = EWMA_ALPHA * mid + (1 - EWMA_ALPHA) * ewma
-
-        fair = ewma
-        td = {"a_ewma": ewma}
+        # --- Fair value: fixed anchor (no EWMA lag, no noise-chasing) ---
+        fair = ANCHOR
+        td = {}
         orders = []
-        if fair is None:
-            return orders, td
 
         # Deviation-based skew: lean INTO the oscillation.
         # When mid is below fair (bottom), raise adj_fair → buy more, resist selling.
