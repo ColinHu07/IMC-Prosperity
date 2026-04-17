@@ -129,7 +129,8 @@ class Trader:
 
     def _trade_pepper(self, sym, bids, asks, mid, position, old):
         LIMIT = POSITION_LIMIT
-        MAX_SIZE = 20
+        # Slightly faster clip than baseline 20; still top-of-book-only taking.
+        MAX_SIZE = 22
         TREND_PRIOR = 0.1
 
         n = old.get("p_n", 0)

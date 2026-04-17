@@ -129,7 +129,8 @@ class Trader:
 
     def _trade_pepper(self, sym, bids, asks, mid, position, old):
         LIMIT = POSITION_LIMIT
-        MAX_SIZE = 20
+        # Slightly faster clip than baseline 20; still top-of-book-only taking.
+        MAX_SIZE = 22
         TREND_PRIOR = 0.1
 
         n = old.get("p_n", 0)
@@ -195,7 +196,7 @@ class Trader:
 
         if bids and pos > 0:
             for bp in sorted(bids, reverse=True):
-                if bp > fair + 15:
+                if bp > fair + 14:
                     vol = min(bids[bp], 5, pos)
                     if vol > 0:
                         orders.append(Order(sym, int(bp), -vol))

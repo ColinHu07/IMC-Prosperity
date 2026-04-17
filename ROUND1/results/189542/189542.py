@@ -3,7 +3,9 @@ import json
 import math
 
 
-POSITION_LIMIT = 80  # Both products
+POSITION_LIMIT = 80  # ASH_COATED_OSMIUM
+# Exchange position cap for PEPPER only (structural; ASH still uses POSITION_LIMIT).
+PEPPER_POSITION_LIMIT = 50
 
 
 class Trader:
@@ -128,7 +130,7 @@ class Trader:
         return orders, td
 
     def _trade_pepper(self, sym, bids, asks, mid, position, old):
-        LIMIT = POSITION_LIMIT
+        LIMIT = PEPPER_POSITION_LIMIT
         MAX_SIZE = 20
         TREND_PRIOR = 0.1
 
@@ -183,15 +185,6 @@ class Trader:
                 if vol > 0:
                     orders.append(Order(sym, int(best_ask), int(vol)))
                     pos += vol
-
-            room = LIMIT - pos
-            if room > 0 and len(sorted_asks) > 1:
-                second_ask = sorted_asks[1]
-                if second_ask <= fair + 2:
-                    vol2 = min(asks[second_ask], MAX_SIZE // 2, room)
-                    if vol2 > 0:
-                        orders.append(Order(sym, int(second_ask), int(vol2)))
-                        pos += vol2
 
         if bids and pos > 0:
             for bp in sorted(bids, reverse=True):
