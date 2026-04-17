@@ -70,12 +70,25 @@ class Trader:
     def _trade_ash(self, sym, bids, asks, mid, position, old):
         LIMIT = POSITION_LIMIT
         ANCHOR = 10000.0           # ASH mean-reverts to this level
+        SKEW_FACTOR = 0.05         # Gentle inventory pressure
         MAX_SIZE = 80              # Max order size
+
+        # --- Microprice: volume-weighted midpoint ---
+        mprice = mid
+        if bids and asks:
+            bb = max(bids)
+            ba = min(asks)
+            bv = bids[bb]
+            av = asks[ba]
+            if bv + av > 0:
+                mprice = (ba * bv + bb * av) / (bv + av)
 
         # --- Fair value: fixed anchor (no EWMA lag, no noise-chasing) ---
         fair = ANCHOR
         td = {}
         orders = []
+        if fair is None:
+            return orders, td
 
         # Deviation-based skew: lean INTO the oscillation.
         # When mid is below fair (bottom), raise adj_fair → buy more, resist selling.
@@ -155,12 +168,13 @@ class Trader:
     # -------------------------------------------------------------- PEPPER
     # Structural linear drift: price rises ~0.1/tick (~1000/day).
     # Online OLS estimates trend from scratch each day.
-    # Get to max long ASAP to ride the drift. Take asks aggressively.
+    # Stay long to ride the drift, but avoid overpaying deep ask levels.
+    # Execution edge here is robust: top-of-book taking + passive accumulation.
     # -------------------------------------------------------------- PEPPER
 
     def _trade_pepper(self, sym, bids, asks, mid, position, old):
         LIMIT = POSITION_LIMIT
-        MAX_SIZE = 80
+        MAX_SIZE = 25
         TREND_PRIOR = 0.1
 
         # --- Online OLS for trend fair value ---
@@ -193,35 +207,44 @@ class Trader:
 
         orders = []
         if base is None:
+            # Bootstrap: get initial long exposure immediately.
+            if asks:
+                best_ask = min(asks)
+                buy_sz = min(asks[best_ask], MAX_SIZE, LIMIT - position)
+                if buy_sz > 0:
+                    orders.append(Order(sym, int(best_ask), int(buy_sz)))
+            if bids and position < LIMIT:
+                bid_px = max(bids) + 1
+                bid_sz = min(20, LIMIT - position)
+                if bid_sz > 0:
+                    orders.append(Order(sym, int(bid_px), int(bid_sz)))
             return orders, td
 
         fair = base + rate * step
         pos = position
 
-        # Take top-of-book ask only (avoid overpaying deep levels).
-        # Allow 2nd level only if very close to fair.
+        # Build long exposure early: always take best ask while underweight.
+        target_pos = LIMIT
         if asks:
             sorted_asks = sorted(asks)
-            for i, ap in enumerate(sorted_asks):
-                room = LIMIT - pos
-                if room <= 0:
-                    break
-                if i == 0:
-                    # Best ask: take if within premium
-                    max_premium = 8 if pos < LIMIT * 0.8 else 3
-                    if ap <= fair + max_premium:
-                        vol = min(asks[ap], MAX_SIZE, room)
-                        if vol > 0:
-                            orders.append(Order(sym, int(ap), vol))
-                            pos += vol
-                elif i == 1 and ap <= fair + 2:
-                    # 2nd level: only if very close to fair
-                    vol = min(asks[ap], MAX_SIZE, room)
-                    if vol > 0:
-                        orders.append(Order(sym, int(ap), vol))
-                        pos += vol
-                else:
-                    break
+            room = LIMIT - pos
+            if room > 0:
+                best_ask = sorted_asks[0]
+                take_clip = MAX_SIZE if pos < LIMIT * 0.6 else MAX_SIZE // 2
+                vol = min(asks[best_ask], take_clip, room)
+                if vol > 0:
+                    orders.append(Order(sym, int(best_ask), int(vol)))
+                    pos += vol
+
+            # Optional second level only if still close to trend fair.
+            room = LIMIT - pos
+            if room > 8 and len(sorted_asks) > 1:
+                second_ask = sorted_asks[1]
+                if second_ask <= fair + 2:
+                    vol2 = min(asks[second_ask], MAX_SIZE // 2, room)
+                    if vol2 > 0:
+                        orders.append(Order(sym, int(second_ask), int(vol2)))
+                        pos += vol2
 
         # Only sell at extreme premium (rare dislocation)
         if bids and pos > 0:
@@ -232,14 +255,20 @@ class Trader:
                         orders.append(Order(sym, int(bp), -vol))
                         pos -= vol
 
-        # Passive bid at fair+1 to accumulate position
-        bid_vol = min(MAX_SIZE, LIMIT - pos)
+        # Passive bid: primary way to fill remaining room.
+        bid_vol = min(25, max(0, target_pos - pos))
         if bid_vol > 0:
-            bid_px = math.floor(fair) + 1
+            if bids:
+                bid_px = max(bids) + 1
+                bid_cap = math.floor(fair + (1 if (target_pos - pos) > 20 else 0))
+                if bid_px > bid_cap:
+                    bid_px = bid_cap
+            else:
+                bid_px = math.floor(fair) - 1
             orders.append(Order(sym, int(bid_px), int(bid_vol)))
 
         # Ask far above fair to avoid selling into the trend
-        ask_vol = min(MAX_SIZE, LIMIT + pos)
+        ask_vol = min(10, LIMIT + pos)
         if ask_vol > 0:
             ask_px = math.ceil(fair + 15)
             orders.append(Order(sym, int(ask_px), -int(ask_vol)))
