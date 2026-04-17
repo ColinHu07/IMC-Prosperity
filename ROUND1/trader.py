@@ -198,19 +198,30 @@ class Trader:
         fair = base + rate * step
         pos = position
 
-        # Take asks aggressively — opportunity cost of not being long is huge.
-        # Allow premium up to 8 ticks while building, tighter when near full.
+        # Take top-of-book ask only (avoid overpaying deep levels).
+        # Allow 2nd level only if very close to fair.
         if asks:
-            for ap in sorted(asks):
+            sorted_asks = sorted(asks)
+            for i, ap in enumerate(sorted_asks):
                 room = LIMIT - pos
                 if room <= 0:
                     break
-                max_premium = 8 if pos < LIMIT * 0.8 else 3
-                if ap <= fair + max_premium:
+                if i == 0:
+                    # Best ask: take if within premium
+                    max_premium = 8 if pos < LIMIT * 0.8 else 3
+                    if ap <= fair + max_premium:
+                        vol = min(asks[ap], MAX_SIZE, room)
+                        if vol > 0:
+                            orders.append(Order(sym, int(ap), vol))
+                            pos += vol
+                elif i == 1 and ap <= fair + 2:
+                    # 2nd level: only if very close to fair
                     vol = min(asks[ap], MAX_SIZE, room)
                     if vol > 0:
                         orders.append(Order(sym, int(ap), vol))
                         pos += vol
+                else:
+                    break
 
         # Only sell at extreme premium (rare dislocation)
         if bids and pos > 0:
@@ -221,15 +232,10 @@ class Trader:
                         orders.append(Order(sym, int(bp), -vol))
                         pos -= vol
 
-        # Passive bid: penny the book, capped at fair
+        # Passive bid at fair+1 to accumulate position
         bid_vol = min(MAX_SIZE, LIMIT - pos)
         if bid_vol > 0:
-            if bids:
-                bid_px = max(bids) + 1
-                if bid_px > fair:
-                    bid_px = math.floor(fair)
-            else:
-                bid_px = math.floor(fair) - 1
+            bid_px = math.floor(fair) + 1
             orders.append(Order(sym, int(bid_px), int(bid_vol)))
 
         # Ask far above fair to avoid selling into the trend
