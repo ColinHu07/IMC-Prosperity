@@ -447,3 +447,89 @@ In priority order, roughly by expected PnL impact:
 None of these need new files. Edit `R3trader.py` in place and lean on
 git for history. `R3trader_submitted.py` stays frozen so we can always
 replay the live submission.
+## Experiment log (do-not-repeat)
+
+### HP-CONT-001 (one-sided continuation budget + toxicity kill) — REJECTED
+
+Hypothesis:
+- Let HP keep one-sided continuation quotes in persistent trend (rather than
+  strict trend-off), with a capped continuation budget and toxicity kill.
+
+What changed:
+- Added normalized trend/run gating in HP, one-sided suppression of the fade
+  side, temporary cap boost, and toxicity kill using `deep_regime.score`.
+
+Results vs baseline:
+- Replay (100k pessim harness): **no change** in HP or TOTAL.
+  - day0 HP +192, TOTAL +488
+  - day1 HP +259, TOTAL +1602
+  - day2 HP +256, TOTAL +1045
+- Pessim backtest: worsened
+  - baseline mean/min: +6508 / +5159
+  - HP-CONT-001 mean/min: +6441 / +5142
+- Stress: worse tail behavior
+  - baseline mins: anchor+200 +3130, anchor-200 +2906, vol3x -14460
+  - HP-CONT-001 mins: anchor+200 +4711, anchor-200 +2655, vol3x -15595
+  - drift min also dropped materially.
+
+Decision:
+- **Reject**. Do not retry HP-CONT-001 unchanged.
+- Retry only if preconditions change (e.g., live HP tape shows much stronger
+  trend persistence than current replay tape).
+
+### HP-CONT-002 (continuation only in wide spread + stricter toxicity kill) — REJECTED
+
+Hypothesis:
+- Restrict continuation to wider-touch states (`touch >= 16`) and enforce a
+  tighter toxicity kill (`score >= 0.45`) to preserve momentum upside while
+  reducing adverse selection.
+
+Result (failed hard gates immediately):
+- Replay collapsed vs baseline:
+  - baseline TOTAL: +488 / +1602 / +1045
+  - HP-CONT-002 TOTAL: +296 / +1364 / +785
+  - HP also collapsed: +192/+259/+256 -> +21/0/-4 (effectively disabled).
+- Pessim backtest dropped sharply:
+  - baseline mean/min: +6508 / +5159
+  - HP-CONT-002 mean/min: +4272 / +3545
+
+Decision:
+- **Reject**. Do not retry HP-CONT-002 unchanged.
+- Root cause: continuation gates are too restrictive under current tape and
+  reduce HP participation rather than improving fill quality.
+
+## Rust backtester integration (secondary engine)
+
+We now keep a thin wrapper in this folder:
+
+- `run_rust_backtest.py`
+
+Purpose:
+
+- Run the external `rust_backtester` engine against `R3trader.py` with a
+  single command.
+- Use it as a **cross-check** and faster diagnostics engine, while keeping the
+  local Python pessimistic replay as the final submit gate.
+
+Commands:
+
+```bash
+python run_rust_backtest.py
+python run_rust_backtest.py --day 2
+python run_rust_backtest.py --trader R3trader_submitted.py
+python run_rust_backtest.py --dataset /path/to/prosperity_rust_backtester/datasets/round3
+python run_rust_backtest.py --auto-install-check
+```
+
+Expected dependency:
+
+```bash
+cargo install rust_backtester --locked
+```
+
+Notes:
+
+- Default trader path is `ROUND_3/R3trader.py`.
+- Default dataset is the local `ROUND_3/` CSV folder when present; fallback is
+  alias `round3`.
+- You can still pass an explicit path via `--dataset` when needed.
