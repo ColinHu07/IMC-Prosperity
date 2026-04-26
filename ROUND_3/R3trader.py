@@ -94,6 +94,8 @@ VX_TREND_T = 20.0
 VX_MAX_POS = 120
 VX_QUOTE_EDGE = 2
 VX_INV_SKEW = 0.05
+VX_LAYER_GAP = 1
+VX_LAYER_SPLIT = 0.7
 VX_IMB_COEF = 0.0                # book imbalance ~0 in this sim, signal dead
 
 # Phase 2a — delta hedging. Deep-ITM vouchers have ~1.0 delta versus VEX
@@ -103,7 +105,31 @@ VX_IMB_COEF = 0.0                # book imbalance ~0 in this sim, signal dead
 # scalar multiplier so we can stress-test the effect continuously.
 # Structural rationale (no day-fit): deep-ITM call delta ≡ 1 in our
 # intrinsic-only pricing model.
-VX_DELTA_HEDGE = 1.0
+VX_DELTA_HEDGE = 0.0
+
+# Fast VEX spot estimate used to price deep vouchers in real time. Deep
+# vouchers are highly delta-sensitive, so using VX slow EWMA for intrinsic
+# lags too much in fast tape and creates adverse selection.
+VFE_SPOT_ALPHA = 0.30
+VFE_ANCHOR = 5250.0
+
+# Deep voucher engine (only 4000/4500 enabled). This is where upside remains.
+DEEP_STRIKES = {"VEV_4000": 4000, "VEV_4500": 4500}
+DEEP_QUOTE_EDGE = 6
+DEEP_TAKE_BASE = 8
+DEEP_TAKE_MULT = 0.45
+DEEP_TAKE_MAX = 12
+DEEP_INV_SKEW = 0.15
+DEEP_PASSIVE = 50
+DEEP_MAX_POS = 150
+
+# Structural guards to keep deep-VEV upside without tail blowups.
+DEEP_TREND_T = 20.0
+DEEP_STREAK_VOL = 8
+DEEP_STREAK_POS_FRAC = 0.5
+DEEP_MOM_TAPER_START = 10.0
+DEEP_MOM_TAPER_END = 30.0
+DEEP_MOM_TAPER_MAX = 0.35
 
 
 # -------------------- Voucher knobs --------------------
@@ -184,6 +210,121 @@ def _ewma(prev, x, alpha):
     if prev is None:
         return x
     return alpha * x + (1 - alpha) * prev
+
+
+def _clamp(v, lo, hi):
+    return max(lo, min(hi, v))
+
+
+def _touch_width(bids, asks):
+    if not bids or not asks:
+        return None
+    return max(1, int(min(asks) - max(bids)))
+
+
+def _deep_take_edge(bids, asks):
+    w = _touch_width(bids, asks)
+    if w is None:
+        return DEEP_TAKE_BASE
+    return int(_clamp(round(DEEP_TAKE_MULT * w), DEEP_TAKE_BASE, DEEP_TAKE_MAX))
+
+
+def _deep_effective_cap(trend_abs):
+    if trend_abs <= DEEP_MOM_TAPER_START:
+        return DEEP_MAX_POS
+    if trend_abs >= DEEP_MOM_TAPER_END:
+        return int(round(DEEP_MAX_POS * (1.0 - DEEP_MOM_TAPER_MAX)))
+    frac = ((trend_abs - DEEP_MOM_TAPER_START) /
+            (DEEP_MOM_TAPER_END - DEEP_MOM_TAPER_START))
+    taper = DEEP_MOM_TAPER_MAX * frac
+    return int(round(DEEP_MAX_POS * (1.0 - taper)))
+
+
+def _trade_vev_deep(sym, K, bids, asks, position, spot, trend_vx, streak):
+    """
+    Deep-ITM voucher MM with guarded take loop:
+      - trend gate (skip when VEX trend too strong),
+      - one-sided streak suppression,
+      - spread-aware take threshold,
+      - momentum-aware soft-cap taper.
+    """
+    if spot is None:
+        return []
+    if abs(trend_vx) > DEEP_TREND_T:
+        return []
+
+    hard = POS_LIMIT[sym]
+    soft = _deep_effective_cap(abs(trend_vx))
+    if soft <= 0:
+        return []
+
+    pos = position
+    buy_room = max(0, min(hard - pos, soft - pos))
+    sell_room = max(0, min(hard + pos, soft + pos))
+
+    sup_buy = sup_sell = False
+    if streak and streak.get("vol", 0) >= DEEP_STREAK_VOL:
+        thresh = DEEP_STREAK_POS_FRAC * soft
+        if streak.get("side", 0) > 0 and pos >= thresh:
+            sup_buy = True
+        elif streak.get("side", 0) < 0 and pos <= -thresh:
+            sup_sell = True
+    if sup_buy:
+        buy_room = 0
+    if sup_sell:
+        sell_room = 0
+    if buy_room == 0 and sell_room == 0:
+        return []
+
+    intrinsic = max(spot - K, 0.0)
+    reservation = intrinsic - pos * DEEP_INV_SKEW
+    take_edge = _deep_take_edge(bids, asks)
+    orders = []
+
+    if asks and buy_room > 0:
+        for ap in sorted(asks):
+            if float(ap) > reservation - take_edge or buy_room <= 0:
+                break
+            vol = min(asks[ap], buy_room)
+            if vol > 0:
+                orders.append(Order(sym, int(ap), int(vol)))
+                pos += vol
+                buy_room -= vol
+    if bids and sell_room > 0:
+        for bp in sorted(bids, reverse=True):
+            if float(bp) < reservation + take_edge or sell_room <= 0:
+                break
+            vol = min(bids[bp], sell_room)
+            if vol > 0:
+                orders.append(Order(sym, int(bp), int(-vol)))
+                pos -= vol
+                sell_room -= vol
+
+    if not bids or not asks:
+        return orders
+
+    best_bid = max(bids)
+    best_ask = min(asks)
+    bid_q = best_bid + 1
+    if bid_q > reservation - DEEP_QUOTE_EDGE:
+        bid_q = math.floor(reservation - DEEP_QUOTE_EDGE)
+    ask_q = best_ask - 1
+    if ask_q < reservation + DEEP_QUOTE_EDGE:
+        ask_q = math.ceil(reservation + DEEP_QUOTE_EDGE)
+    if bid_q >= ask_q:
+        bid_q = ask_q - 1
+    bid_q = max(bid_q, int(math.ceil(intrinsic)) if intrinsic > 0 else 1, 1)
+
+    inv_ratio = pos / soft if soft else 0.0
+    buy_scale = _clamp(1.0 - 0.85 * max(0.0, inv_ratio), 0.10, 1.5)
+    sell_scale = _clamp(1.0 - 0.85 * max(0.0, -inv_ratio), 0.10, 1.5)
+    bv = min(buy_room, int(round(DEEP_PASSIVE * buy_scale)))
+    sv = min(sell_room, int(round(DEEP_PASSIVE * sell_scale)))
+    if bv > 0:
+        orders.append(Order(sym, int(bid_q), int(bv)))
+    if sv > 0:
+        orders.append(Order(sym, int(ask_q), int(-sv)))
+    return orders
 
 
 def _passive_mm(sym, bids, asks, pos, hard_limit, fair, trend,
@@ -339,7 +480,7 @@ class Trader:
         ts = state.timestamp
         closeout = ts >= 1_000_000 - CLOSEOUT_TICKS * 100
 
-        td = {"hp": {}, "vx": {}, "vev": {}}
+        td = {"hp": {}, "vx": {}, "vev": {}, "vfe_spot": old.get("vfe_spot", VFE_ANCHOR)}
 
         # ---- update HYDROGEL EWMAs ----
         hp_state = dict(old.get("hp", {}))
@@ -355,6 +496,7 @@ class Trader:
 
         # ---- update VEX EWMAs ----
         vx_state = dict(old.get("vx", {}))
+        vfe_spot = old.get("vfe_spot", VFE_ANCHOR)
         vx_sym = "VELVETFRUIT_EXTRACT"
         vx_bids = vx_asks = None
         if vx_sym in state.order_depths:
@@ -363,7 +505,9 @@ class Trader:
             if vx_mid is not None:
                 vx_state["slow"] = _ewma(vx_state.get("slow"), vx_mid, VX_SLOW_A)
                 vx_state["fast"] = _ewma(vx_state.get("fast"), vx_mid, VX_FAST_A)
+                vfe_spot = _ewma(vfe_spot, vx_mid, VFE_SPOT_ALPHA)
         td["vx"] = vx_state
+        td["vfe_spot"] = vfe_spot
 
         # ---- HYDROGEL ----
         if hp_bids is not None or hp_asks is not None:
@@ -403,39 +547,25 @@ class Trader:
                     vx_sym, vx_bids or {}, vx_asks or {}, pos, hard,
                     fair, trend, VX_MAX_POS, VX_QUOTE_EDGE,
                     VX_INV_SKEW, VX_TREND_T,
+                    layer_gap=VX_LAYER_GAP, layer_split=VX_LAYER_SPLIT,
                     imb_coef=VX_IMB_COEF)
 
-        # ---- Vouchers (deep-ITM + near-ATM) ----
-        # Deep/mid-ITM: fair = intrinsic (VEX_fast - K). The deep-ITM
-        # premium is small and adding a premium EWMA noticeably hurts
-        # quote placement, so keep the cleaner intrinsic-only fair.
-        #
-        # Near-ATM (VEV_5100): intrinsic alone is wrong because the
-        # option has meaningful time value. Use a slow EWMA of
-        # (mid - intrinsic) as the premium estimate.
-        #
-        # Phase 1a: track a per-strike streak based on position deltas
-        # (backtest-harness-safe — doesn't require state.own_trades). If
-        # our fills have piled up on one side AND we're already holding
-        # sizable inventory in that direction, suppress that side until
-        # the position comes back toward flat.
+        # ---- Deep vouchers only (4000/4500) ----
+        # Keep the profitable deep-ITM engine and skip 5000+/near-ATM lines.
         vx_fast = vx_state.get("fast")
         vx_slow = vx_state.get("slow")
-        vev_state = dict(old.get("vev", {}))
         streak_state = dict(old.get("vev_streak", {}))
         if vx_fast is not None and vx_slow is not None:
             trend_vx = vx_fast - vx_slow
-            for sym, K in VEV_STRIKES.items():
+            for sym, K in DEEP_STRIKES.items():
                 if sym not in state.order_depths:
                     continue
                 b, a = _book(state.order_depths[sym])
                 pos = state.position.get(sym, 0)
-                hard = POS_LIMIT[sym]
                 if closeout:
                     result[sym] = _closeout(sym, b, a, pos)
                     continue
 
-                # Phase 1a: update streak from our own position delta.
                 ss = streak_state.get(sym, {"last_pos": pos, "side": 0, "vol": 0})
                 delta = pos - ss.get("last_pos", pos)
                 if delta != 0:
@@ -448,50 +578,11 @@ class Trader:
                 ss["last_pos"] = pos
                 streak_state[sym] = ss
 
-                intrinsic = max(0.0, vx_fast - K)
+                orders = _trade_vev_deep(sym, K, b, a, pos, vfe_spot, trend_vx, ss)
+                if orders:
+                    result[sym] = orders
 
-                if sym in VEV_DEEP:
-                    fair = intrinsic
-                    edge = VEV_QUOTE_EDGE_DEEP
-                    max_pos = VEV_MAX_POS
-                elif sym in VEV_MID:
-                    fair = intrinsic
-                    edge = VEV_QUOTE_EDGE_MID
-                    max_pos = VEV_MAX_POS
-                else:  # VEV_NEAR — use premium EWMA because intrinsic underprices
-                    mid = _micro(b, a)
-                    # Phase 1b: gate quoting on sample count of the EWMA.
-                    prev_prem = vev_state.get(sym)
-                    if mid is not None:
-                        prem_obs = mid - intrinsic
-                        vev_state[sym] = _ewma(prev_prem, prem_obs, VEV_PREMIUM_A)
-                    nsym = sym + ":n"
-                    vev_state[nsym] = vev_state.get(nsym, 0) + (1 if mid is not None else 0)
-                    if vev_state.get(nsym, 0) < VEV_NEAR_MIN_SAMPLES:
-                        continue
-                    prem = vev_state.get(sym)
-                    if prem is None:
-                        continue
-                    fair = max(0.0, intrinsic + prem)
-                    edge = VEV_QUOTE_EDGE_NEAR
-                    max_pos = VEV_NEAR_MAX_POS
-
-                # Phase 1a: apply one-sided suppression. If streak shows
-                # accumulating long (buys), and we're already long >=
-                # threshold, don't send another bid. Symmetric for sells.
-                sup_buy = sup_sell = False
-                if ss["vol"] >= VEV_STREAK_VOL:
-                    thresh = VEV_STREAK_POS_FRAC * max_pos
-                    if ss["side"] > 0 and pos >= thresh:
-                        sup_buy = True
-                    elif ss["side"] < 0 and pos <= -thresh:
-                        sup_sell = True
-
-                result[sym] = _passive_mm(
-                    sym, b, a, pos, hard, fair, trend_vx,
-                    max_pos, edge, VEV_INV_SKEW, VEV_TREND_T,
-                    suppress_buy=sup_buy, suppress_sell=sup_sell)
-        td["vev"] = vev_state
+        td["vev"] = {}
         td["vev_streak"] = streak_state
 
         return result, 0, json.dumps(td)
