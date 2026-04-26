@@ -1,0 +1,198 @@
+{
+  "optimistic": {
+    "score": 258493.52,
+    "total_pnl": 195003.0,
+    "min_day_pnl": 64018.0,
+    "max_drawdown": 1041.0,
+    "avg_inventory": 69.76,
+    "day_pnls": [
+      64018.0,
+      66005.0,
+      64980.0
+    ],
+    "day_details": [
+      {
+        "ASH_COATED_OSMIUM": {
+          "final_pnl": 14234.0,
+          "max_drawdown": 1041.0,
+          "fill_count": 614,
+          "aggressive_fills": 259,
+          "passive_fills": 355,
+          "turnover": 35313191.0,
+          "max_position": 50,
+          "avg_abs_position": 18.75,
+          "final_position": 30
+        },
+        "INTARIAN_PEPPER_ROOT": {
+          "final_pnl": 49784.0,
+          "max_drawdown": 850.0,
+          "fill_count": 5,
+          "aggressive_fills": 5,
+          "passive_fills": 0,
+          "turnover": 500291.0,
+          "max_position": 50,
+          "avg_abs_position": 49.99,
+          "final_position": 50
+        },
+        "TOTAL": {
+          "final_pnl": 64018.0,
+          "max_drawdown": 1041.0
+        }
+      },
+      {
+        "ASH_COATED_OSMIUM": {
+          "final_pnl": 16384.0,
+          "max_drawdown": 900.0,
+          "fill_count": 629,
+          "aggressive_fills": 265,
+          "passive_fills": 364,
+          "turnover": 36262378.0,
+          "max_position": 50,
+          "avg_abs_position": 20.07,
+          "final_position": 36
+        },
+        "INTARIAN_PEPPER_ROOT": {
+          "final_pnl": 49621.0,
+          "max_drawdown": 950.0,
+          "fill_count": 6,
+          "aggressive_fills": 6,
+          "passive_fills": 0,
+          "turnover": 550279.0,
+          "max_position": 50,
+          "avg_abs_position": 49.98,
+          "final_position": 50
+        },
+        "TOTAL": {
+          "final_pnl": 66005.0,
+          "max_drawdown": 950.0
+        }
+      },
+      {
+        "ASH_COATED_OSMIUM": {
+          "final_pnl": 15287.0,
+          "max_drawdown": 975.0,
+          "fill_count": 652,
+          "aggressive_fills": 298,
+          "passive_fills": 354,
+          "turnover": 38624773.0,
+          "max_position": 50,
+          "avg_abs_position": 20.53,
+          "final_position": 20
+        },
+        "INTARIAN_PEPPER_ROOT": {
+          "final_pnl": 49693.0,
+          "max_drawdown": 1000.0,
+          "fill_count": 6,
+          "aggressive_fills": 5,
+          "passive_fills": 1,
+          "turnover": 600307.0,
+          "max_position": 50,
+          "avg_abs_position": 49.95,
+          "final_position": 50
+        },
+        "TOTAL": {
+          "final_pnl": 64980.0,
+          "max_drawdown": 1000.0
+        }
+      }
+    ]
+  },
+  "pessimistic": {
+    "score": 221429.36,
+    "total_pnl": 166878.5,
+    "min_day_pnl": 55061.5,
+    "max_drawdown": 1008.0,
+    "avg_inventory": 66.36,
+    "day_pnls": [
+      55061.5,
+      56324.0,
+      55493.0
+    ],
+    "day_details": [
+      {
+        "ASH_COATED_OSMIUM": {
+          "final_pnl": 5277.5,
+          "max_drawdown": 814.0,
+          "fill_count": 584,
+          "aggressive_fills": 263,
+          "passive_fills": 321,
+          "turnover": 21565177.0,
+          "max_position": 47,
+          "avg_abs_position": 13.9,
+          "final_position": 27
+        },
+        "INTARIAN_PEPPER_ROOT": {
+          "final_pnl": 49784.0,
+          "max_drawdown": 850.0,
+          "fill_count": 5,
+          "aggressive_fills": 5,
+          "passive_fills": 0,
+          "turnover": 500291.0,
+          "max_position": 50,
+          "avg_abs_position": 49.99,
+          "final_position": 50
+        },
+        "TOTAL": {
+          "final_pnl": 55061.5,
+          "max_drawdown": 850.0
+        }
+      },
+      {
+        "ASH_COATED_OSMIUM": {
+          "final_pnl": 6703.0,
+          "max_drawdown": 829.0,
+          "fill_count": 601,
+          "aggressive_fills": 269,
+          "passive_fills": 332,
+          "turnover": 21970443.0,
+          "max_position": 47,
+          "avg_abs_position": 16.14,
+          "final_position": 23
+        },
+        "INTARIAN_PEPPER_ROOT": {
+          "final_pnl": 49621.0,
+          "max_drawdown": 950.0,
+          "fill_count": 6,
+          "aggressive_fills": 6,
+          "passive_fills": 0,
+          "turnover": 550279.0,
+          "max_position": 50,
+          "avg_abs_position": 49.98,
+          "final_position": 50
+        },
+        "TOTAL": {
+          "final_pnl": 56324.0,
+          "max_drawdown": 950.0
+        }
+      },
+      {
+        "ASH_COATED_OSMIUM": {
+          "final_pnl": 5809.0,
+          "max_drawdown": 1008.0,
+          "fill_count": 635,
+          "aggressive_fills": 310,
+          "passive_fills": 325,
+          "turnover": 24652346.0,
+          "max_position": 50,
+          "avg_abs_position": 19.13,
+          "final_position": 9
+        },
+        "INTARIAN_PEPPER_ROOT": {
+          "final_pnl": 49684.0,
+          "max_drawdown": 1000.0,
+          "fill_count": 6,
+          "aggressive_fills": 6,
+          "passive_fills": 0,
+          "turnover": 600316.0,
+          "max_position": 50,
+          "avg_abs_position": 49.94,
+          "final_position": 50
+        },
+        "TOTAL": {
+          "final_pnl": 55493.0,
+          "max_drawdown": 1008.0
+        }
+      }
+    ]
+  }
+}

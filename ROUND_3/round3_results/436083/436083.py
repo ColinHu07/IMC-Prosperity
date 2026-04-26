@@ -1,0 +1,153 @@
+"""
+R3trader V3 — minimal trading.
+
+Hypothesis from V0/V1/V2 results: the backtest's passive fill model only triggers
+on adverse market moves (next-ask <= our bid => someone crossed DOWN to our
+level = we bought into weakness). Products with higher dollar value or wider
+spreads lose more in this regime. Therefore, reduce attack surface:
+
+  * Trade ONLY HYDROGEL_PACK (the tightest, lowest-dollar product with a
+    plausible mean-reversion anchor — the closest analogue to R1 ASH).
+  * Skip VELVETFRUIT_EXTRACT and every voucher entirely.
+
+If V3 out-PnLs V1 in the sim, that's the clean baseline to submit. Every
+strategy that ADDS a product must beat V3's per-day PnL on 2 of 3 days to
+earn its way in.
+"""
+from datamodel import OrderDepth, TradingState, Order
+import json, math
+
+
+LIMIT = 200
+HP_PRIOR_K = 50
+HP_ANCHOR = 9990.0
+HP_BREAKER_DEV = 80.0
+
+DEV_SKEW_COEF = 0.30
+INV_SKEW = 0.02
+L1_FRACTION = 0.60
+FAST_ALPHA = 0.02
+MAX_TAKE = 100
+CLOSEOUT_TICKS = 500
+
+
+def _micro(bids, asks):
+    if bids and asks:
+        bb, ba = max(bids), min(asks)
+        bv, av = bids[bb], asks[ba]
+        if bv+av > 0: return (bb*av + ba*bv)/(bv+av)
+        return 0.5*(bb+ba)
+    if bids: return float(max(bids))
+    if asks: return float(min(asks))
+    return None
+
+
+def _book(od):
+    b = {p: abs(v) for p, v in (od.buy_orders or {}).items()}
+    a = {p: abs(v) for p, v in (od.sell_orders or {}).items()}
+    return b, a
+
+
+class Trader:
+    def run(self, state: TradingState):
+        result, td = {}, {}
+        try:
+            old = json.loads(state.traderData) if state.traderData else {}
+        except Exception:
+            old = {}
+
+        ts = state.timestamp
+        closeout = ts >= 1_000_000 - CLOSEOUT_TICKS*100
+
+        sym = "HYDROGEL_PACK"
+        if sym not in state.order_depths:
+            return result, 0, json.dumps(td)
+
+        bids, asks = _book(state.order_depths[sym])
+        mid = _micro(bids, asks)
+        pos = state.position.get(sym, 0)
+
+        n = old.get("n", 0); s = old.get("s", 0.0); fast = old.get("fast")
+        if mid is not None:
+            n += 1; s += mid
+            fast = mid if fast is None else (FAST_ALPHA*mid + (1-FAST_ALPHA)*fast)
+        td["n"], td["s"], td["fast"] = n, s, fast
+
+        if mid is None or fast is None:
+            return result, 0, json.dumps(td)
+
+        bayes = (HP_PRIOR_K*HP_ANCHOR + s) / (HP_PRIOR_K + n)
+        anchored = abs(fast - HP_ANCHOR) <= HP_BREAKER_DEV
+        fair = bayes if anchored else fast
+
+        orders = []
+        if closeout:
+            p = pos
+            if p > 0 and bids:
+                for bp in sorted(bids, reverse=True):
+                    vol = min(bids[bp], p)
+                    if vol > 0:
+                        orders.append(Order(sym, bp, -vol)); p -= vol
+                    if p <= 0: break
+            if p < 0 and asks:
+                for ap in sorted(asks):
+                    vol = min(asks[ap], -p)
+                    if vol > 0:
+                        orders.append(Order(sym, ap, vol)); p += vol
+                    if p >= 0: break
+            result[sym] = orders
+            return result, 0, json.dumps(td)
+
+        dev = mid - fair
+        adj_fair = fair - dev*DEV_SKEW_COEF - pos*INV_SKEW
+
+        taken_buy = 0; taken_sell = 0
+        p = pos
+        if asks:
+            for ap in sorted(asks):
+                if taken_buy >= MAX_TAKE: break
+                if ap < adj_fair:
+                    room = LIMIT - p
+                    vol = min(asks[ap], room, MAX_TAKE - taken_buy)
+                    if vol > 0:
+                        orders.append(Order(sym, ap, vol)); p += vol; taken_buy += vol
+        if bids:
+            for bp in sorted(bids, reverse=True):
+                if taken_sell >= MAX_TAKE: break
+                if bp > adj_fair:
+                    room = LIMIT + p
+                    vol = min(bids[bp], room, MAX_TAKE - taken_sell)
+                    if vol > 0:
+                        orders.append(Order(sym, bp, -vol)); p -= vol; taken_sell += vol
+
+        best_bid = max(bids) if bids else int(fair) - 8
+        best_ask = min(asks) if asks else int(fair) + 8
+        bid_px1 = best_bid + 1
+        ask_px1 = best_ask - 1
+        if bid_px1 >= adj_fair:
+            bid_px1 = math.floor(adj_fair) - 1
+        if ask_px1 <= adj_fair:
+            ask_px1 = math.ceil(adj_fair) + 1
+        bid_px2 = best_bid
+        ask_px2 = best_ask
+        if bid_px2 >= adj_fair:
+            bid_px2 = math.floor(adj_fair) - 2
+        if ask_px2 <= adj_fair:
+            ask_px2 = math.ceil(adj_fair) + 2
+
+        buy_room = max(0, LIMIT - pos - taken_buy)
+        sell_room = max(0, LIMIT + pos - taken_sell)
+        bv1 = int(buy_room*L1_FRACTION); bv2 = buy_room - bv1
+        av1 = int(sell_room*L1_FRACTION); av2 = sell_room - av1
+
+        if bv1 > 0:
+            orders.append(Order(sym, int(bid_px1), bv1))
+        if bv2 > 0 and bid_px2 != bid_px1:
+            orders.append(Order(sym, int(bid_px2), bv2))
+        if av1 > 0:
+            orders.append(Order(sym, int(ask_px1), -av1))
+        if av2 > 0 and ask_px2 != ask_px1:
+            orders.append(Order(sym, int(ask_px2), -av2))
+
+        result[sym] = orders
+        return result, 0, json.dumps(td)
